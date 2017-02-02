@@ -7,6 +7,7 @@ import Json.Decode exposing (Decoder, int, string, list, nullable)
 import Json.Decode.Pipeline exposing (decode, required, hardcoded, optional)
 import String exposing (slice)
 import Dict exposing (..)
+import Time exposing (..)
 
 
 -- MODEL
@@ -17,6 +18,7 @@ type alias Model =
     , newGameUrl: Maybe Url
     , notification: String
     , gameView: Maybe GameView
+    , myGames: Dict String (PlayerId, Player)
     }
 
 init : ( Model, Cmd Msg )
@@ -26,7 +28,8 @@ init =
             { games = []
             , newGameUrl = Nothing
             , notification = ""
-            , gameView = Nothing  }
+            , gameView = Nothing
+            , myGames = Dict.empty }
     in
         (model , getGames)
 
@@ -54,6 +57,7 @@ type alias GameView =
     , grid: List (List String)
     , playerId: Maybe PlayerId
     , playUrl: Url
+    , self: Url
     }
 
 type Url = Url String
@@ -61,8 +65,6 @@ type GameId = GameId String
 type PlayerId = PlayerId String
 
 type Player = X | O
-
-type alias MyGames = Dict GameId (PlayerId, Player)
 
 -- MESSAGES
 
@@ -75,6 +77,9 @@ type Msg
     | View (Url, Maybe PlayerId)
     | OnView (Result Http.Error GameView)
     | Join Url
+    | RefreshGames
+    | RefreshCurrentGame
+    
 
 
 -- VIEW
@@ -159,7 +164,11 @@ update msg model =
 
 
         OnNewGame (Ok response) -> 
-            ( model , getGame response.url (Just response.playerId))
+            let
+                (Url url) = response.url
+                myGames = Dict.insert url (response.playerId, X) model.myGames
+            in
+                ( { model | myGames =  myGames } , getGame response.url (Just response.playerId))
 
 
         OnNewGame (Err err) ->
@@ -185,6 +194,14 @@ update msg model =
 
         Join (Url url) ->
             ( { model | notification = "join game (url = " ++ url ++ ")" }, Cmd.none)            
+
+        RefreshGames ->
+            ( model, getGames)
+
+        RefreshCurrentGame ->
+            case model.gameView of
+                Just gv -> ( model, getGame gv.self gv.playerId)
+                Nothing -> ( model, Cmd.none)
 
 -- JSON
 
@@ -229,6 +246,7 @@ gameViewDecoder maybePlayerId =
         |> required "grid" (list (list string))
         |> hardcoded maybePlayerId
         |> required "_links" (linkDecoder "http://secret-badlands-62551.herokuapp.com/docs/rels/play")
+        |> required "_links" (linkDecoder "self")
 
 -- HTTP
 
@@ -279,6 +297,18 @@ newGame url =
     emptyBody
     |> Http.send OnNewGame
 
+-- SUBSCRIPTIONS
+
+
+subscriptions : Model -> Sub Msg
+subscriptions model =
+    Sub.batch
+        [ every (inSeconds 4000000.0) (\_ -> RefreshGames)
+        , every (inSeconds 2000000.0) (\_ -> RefreshCurrentGame)
+        ]
+
+
+
 -- MAIN
 
 
@@ -288,5 +318,5 @@ main =
         { init = init
         , view = view
         , update = update
-        , subscriptions = (always Sub.none)
+        , subscriptions = subscriptions
         }
