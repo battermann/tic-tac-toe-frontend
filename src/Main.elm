@@ -14,7 +14,7 @@ import Dict exposing (..)
 
 type alias Model =
     { games: List Game
-    , newGameUrl: Maybe String
+    , newGameUrl: Maybe Url
     , notification: String
     , gameView: Maybe GameView
     }
@@ -22,39 +22,47 @@ type alias Model =
 init : ( Model, Cmd Msg )
 init =
     let
-        model = { games = [], newGameUrl = Nothing, notification = "", gameView = Nothing  }
+        model = 
+            { games = []
+            , newGameUrl = Nothing
+            , notification = ""
+            , gameView = Nothing  }
     in
         (model , getGames)
 
 type alias Game = 
-  { id: String
-  , status: String
-  , self: String
-  , join: Maybe String
-  }
+    { id: GameId
+    , status: String
+    , self: Url
+    , join: Maybe Url
+    }
 
 type alias NewGameResponse = 
-    { url: String
-    , playerId: String
+    { url: Url
+    , playerId: PlayerId
     }
 
 type alias GamesResponse =
     { games: List Game
-    , newGameUrl: Maybe String
+    , newGameUrl: Maybe Url
     , notification: String
     }
 
 type alias GameView = 
-    { id: String 
+    { id: GameId 
     , status: String
     , grid: List (List String)
-    , playerId: Maybe String
-    , playUrl: String
+    , playerId: Maybe PlayerId
+    , playUrl: Url
     }
+
+type Url = Url String
+type GameId = GameId String
+type PlayerId = PlayerId String
 
 type Player = X | O
 
-type alias MyGames = Dict String (String, Player)
+type alias MyGames = Dict GameId (PlayerId, Player)
 
 -- MESSAGES
 
@@ -64,9 +72,9 @@ type Msg
     | OnGames (Result Http.Error GamesResponse)
     | NewGame
     | OnNewGame (Result Http.Error NewGameResponse)
-    | View (String, Maybe String)
+    | View (Url, Maybe PlayerId)
     | OnView (Result Http.Error GameView)
-    | Join String
+    | Join Url
 
 
 -- VIEW
@@ -74,12 +82,15 @@ type Msg
 
 toTableRow: Game -> Html Msg
 toTableRow game =
-  tr []
-     [ td[] [text (slice 0 6 game.id)]
-     , td[] [text game.status]
-     , td[] [ button [ onClick (View (game.self, Nothing))] [ text "view" ] 
-            , game.join |> Maybe.map (\url -> button [ onClick (Join url)] [ text "join" ] ) |> Maybe.withDefault (text "") ]
-     ]
+    let
+        (GameId id) = game.id
+    in
+        tr []
+            [ td[] [text (slice 0 6 id)]
+            , td[] [text game.status]
+            , td[] [ button [ onClick (View (game.self, Nothing))] [ text "view" ] 
+                    , game.join |> Maybe.map (\url -> button [ onClick (Join url)] [ text "join" ] ) |> Maybe.withDefault (text "") ]
+            ]
 
 toGridTable : List (List String) -> Html Msg
 toGridTable grid =
@@ -94,11 +105,14 @@ toGridTable grid =
 
 toGameView: GameView -> Html Msg
 toGameView gameView =
-    div [] 
-        [ toGridTable gameView.grid
-        , div [] [ p [] [ text ("game: " ++ gameView.id) ] ]
-        , div [] [ p [] [  text ("status: " ++ gameView.status) ]]
-        ]
+    let
+        (GameId id) = gameView.id
+    in
+        div [] 
+            [ toGridTable gameView.grid
+            , div [] [ p [] [ text ("game: " ++ id) ] ]
+            , div [] [ p [] [  text ("status: " ++ gameView.status) ]]
+            ]
 
 view : Model -> Html Msg
 view model =
@@ -154,7 +168,7 @@ update msg model =
 
         NewGame ->
           case model.newGameUrl of
-              Just url -> ( model, postNewGame url)
+              Just url -> ( model, newGame url)
               Nothing  -> ( model, Cmd.none)
               
         View (url, playerId) ->
@@ -169,23 +183,23 @@ update msg model =
             (model, Cmd.none)            
 
 
-        Join url ->
+        Join (Url url) ->
             ( { model | notification = "join game (url = " ++ url ++ ")" }, Cmd.none)            
 
 -- JSON
 
 
-linkDecoder : String -> Decoder String
-linkDecoder rel = Json.Decode.at [ rel, "href" ] string
+linkDecoder : String -> Decoder Url
+linkDecoder rel = Json.Decode.at [ rel, "href" ] (string |> Json.Decode.map Url)
 
-maybeLinkDecoder : String -> Decoder (Maybe String)
+maybeLinkDecoder : String -> Decoder (Maybe Url)
 maybeLinkDecoder rel =
-    Json.Decode.maybe (Json.Decode.at [ rel, "href" ] string)
+    Json.Decode.maybe (linkDecoder rel)
 
 gameDecoder : Decoder Game
 gameDecoder =
     decode Game
-        |> required "id" string
+        |> required "id" (string |> Json.Decode.map GameId)
         |> required "status" string
         |> required "_links" (linkDecoder "self")
         |> optional "_links" (maybeLinkDecoder "http://secret-badlands-62551.herokuapp.com/docs/rels/join") Nothing
@@ -203,14 +217,14 @@ gamesResponseDecoder =
         |> hardcoded ""
 
 
-newGameDecoder : Decoder String
-newGameDecoder = Json.Decode.at [ "playerId" ] string
+newGameDecoder : Decoder PlayerId
+newGameDecoder = Json.Decode.at [ "playerId" ] (string |> Json.Decode.map PlayerId)
 
 
-gameViewDecoder : Maybe String -> Decoder GameView
+gameViewDecoder : Maybe PlayerId -> Decoder GameView
 gameViewDecoder maybePlayerId =
     decode GameView
-        |> required "id" string
+        |> required "id" (string |> Json.Decode.map GameId)
         |> required "status" string
         |> required "grid" (list (list string))
         |> hardcoded maybePlayerId
@@ -227,8 +241,8 @@ getGames  =
     |> Http.get "http://secret-badlands-62551.herokuapp.com/api/games" 
     |> Http.send OnGames
 
-getGame : String -> Maybe String -> Cmd Msg
-getGame url maybePlayerId =
+getGame : Url -> Maybe PlayerId -> Cmd Msg
+getGame (Url url) maybePlayerId =
     gameViewDecoder maybePlayerId
     |> Http.get url
     |> Http.send OnView    
@@ -236,8 +250,8 @@ getGame url maybePlayerId =
 
 -- POST
 
-mkPostRequest : Expect a -> String -> Body -> Request a
-mkPostRequest exp url body =
+mkPostRequest : Expect a -> Url -> Body -> Request a
+mkPostRequest exp (Url url) body =
   request
     { method = "POST"
     , headers = []
@@ -248,13 +262,17 @@ mkPostRequest exp url body =
     , withCredentials = False
     }
 
-postNewGame : String -> Cmd Msg
-postNewGame url =
+newGame : Url -> Cmd Msg
+newGame url =
     mkPostRequest 
     (expectStringResponse (\response -> 
         let 
-            urlResult = Dict.get "Location" response.headers |> Result.fromMaybe "could not find Location header"
-            playerId = Json.Decode.decodeString newGameDecoder response.body
+            urlResult = 
+                Dict.get "Location" response.headers 
+                |> Result.fromMaybe "could not find Location header"
+                |> Result.map Url
+            playerId = 
+                Json.Decode.decodeString newGameDecoder response.body
         in
             Result.map2 NewGameResponse urlResult playerId))
     url
